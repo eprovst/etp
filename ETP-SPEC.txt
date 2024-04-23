@@ -1,0 +1,22 @@
+Default port number: 31337
+
+
+Action command:
+
+Dcommand option1 option2 ...\0
+
+Response package is a sequence of periodic \0 bytes, at least two
+every second to check whether the connection is still alive, followed
+by:
+
+    length\0[data]
+
+
+Info command:
+
+INFO\0
+
+Response is [field][;field]*\0 where <field> is any of:
+
+ - Nxx  with xx the number of threads.
+

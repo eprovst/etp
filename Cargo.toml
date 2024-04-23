@@ -1,0 +1,6 @@
+[package]
+name = "etp"
+version = "0.1.0"
+authors = ["Evert Provoost <evert@eprovst.net>"]
+edition = "2021"
+
