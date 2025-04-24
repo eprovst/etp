@@ -1,5 +1,7 @@
-Default port number: 31337
+ETP server
+==========
 
+TCP port number: 31337
 
 Action command:
 
@@ -20,3 +22,10 @@ Response is [field][;field]*\0 where <field> is any of:
 
  - Nxx  with xx the number of threads.
 
+
+ETP auto discovery
+==================
+
+UDP port number: 31337
+
+A single byte message 'P' should be replied to by 'P'.

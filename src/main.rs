@@ -6,16 +6,41 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Error, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
 use std::process::{exit, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 fn main() {
+    // ETP auto discovery
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:31337") {
+        println!("[main] INFO: ETP auto discovery started, listening on port udp/31337.");
+        thread::spawn(move || loop {
+            let mut buf = [0; 1];
+            if let Ok((amt, src)) = socket.recv_from(&mut buf) {
+                if amt == 1 && buf == ['P' as u8] {
+                    if let Ok(1) = socket.send_to(&buf, src) {
+                        println!("[ad] INFO: replied to auto discovery request from {src}.");
+                    } else {
+                        println!("[ad] WARN: failed to reply to {src}.");
+                    }
+                } else {
+                    println!("[ad] WARN: invalid request, ignoring.");
+                }
+            } else {
+                println!("[ad] WARN: failed to retrieve data, ignoring.");
+            }
+        });
+    } else {
+        println!("[main] ERROR: failed to bind UDP socket on port 31337.");
+        exit(1);
+    }
+
+    // Main ETP server
     if let Ok(apps) = load_apps() {
         if let Ok(listener) = TcpListener::bind("0.0.0.0:31337") {
-            println!("[main] INFO: server started, listening on port 31337.");
+            println!("[main] INFO: ETP server started, listening on port tcp/31337.");
 
             let mut id_counter = 0;
             for stream in listener.incoming() {
@@ -27,7 +52,7 @@ fn main() {
                 });
             }
         } else {
-            println!("[main] ERROR: failed to bind listener to port 31337.");
+            println!("[main] ERROR: failed to bind TCP listener to port 31337.");
             exit(1);
         }
     } else {
@@ -55,30 +80,30 @@ fn handle_connection(id: u16, stream: &mut TcpStream, apps: &Vec<String>) {
                                         apps,
                                     );
                                 } else {
-                                    println!("[{}] WARN: mangled arguments, dropping.", id);
+                                    println!("[{id}] WARN: mangled arguments, dropping.");
                                 }
                             } else {
-                                println!("[{}] WARN: mangled app name, dropping.", id);
+                                println!("[{id}] WARN: mangled app name, dropping.");
                             }
                         } else {
-                            println!("[{}] WARN: too short request, dropping.", id);
+                            println!("[{id}] WARN: too short request, dropping.");
                         }
                     }
                     'I' => info(id, stream),
                     t => {
-                        println!("[{}] WARN: unknown request type '{}', dropping.", id, t);
+                        println!("[{id}] WARN: unknown request type '{t}', dropping.");
                     }
                 }
             } else {
-                println!("[{}] WARN: empty request, dropping.", id);
+                println!("[{id}] WARN: empty request, dropping.");
             }
         } else {
-            println!("[{}] WARN: failed to retrieve request, dropping.", id);
+            println!("[{id}] WARN: failed to retrieve request, dropping.");
         }
     } else {
-        println!("[{}] NEVER?: failed to get connection from thread.", id);
+        println!("[{id}] NEVER?: failed to get connection from thread.");
     }
-    println!("[{}] INFO: closing connection.", id);
+    println!("[{id}] INFO: closing connection.");
     _ = stream.flush();
     _ = stream.shutdown(Shutdown::Both);
 }
@@ -88,7 +113,7 @@ fn load_apps() -> Result<Vec<String>, Error> {
 }
 
 fn run_app(id: u16, stream: &mut TcpStream, app: String, args: Vec<String>, apps: &Vec<String>) {
-    println!("[{}] INFO: starting job '{} {}'.", id, app, args.join(" "));
+    println!("[{id}] INFO: starting job '{app} {}'.", args.join(" "));
     // This line does all the heavy lifting when it comes to security
     if apps.contains(&app) {
         if let Ok(mut child) = Command::new(app)
@@ -118,7 +143,7 @@ fn run_app(id: u16, stream: &mut TcpStream, app: String, args: Vec<String>, apps
                     match child.try_wait() {
                         Ok(Some(status)) => {
                             if !status.success() {
-                                println!("[{}] WARN: app returned error, dropping.", id);
+                                println!("[{id}] WARN: app returned error, dropping.");
                                 // Clean up reader
                                 let _ = reader.join();
                                 return;
@@ -127,18 +152,18 @@ fn run_app(id: u16, stream: &mut TcpStream, app: String, args: Vec<String>, apps
                                     if let Ok(outp) = buffer.lock() {
                                         _ = write!(stream, "{}\0", outp.len());
                                         _ = stream.write_all(outp.as_slice());
-                                        println!("[{}] INFO: job completed.", id);
+                                        println!("[{id}] INFO: job completed.");
                                     } else {
-                                        println!("[{}] NEVER?: buffer lock failed, dropping.", id);
+                                        println!("[{id}] NEVER?: buffer lock failed, dropping.");
                                     }
                                 } else {
-                                    println!("[{}] WARN: reading stdout failed, dropping.", id);
+                                    println!("[{id}] WARN: reading stdout failed, dropping.");
                                 }
                                 return;
                             }
                         }
                         Err(_) => {
-                            println!("[{}] WARN: app execution failed, dropping.", id);
+                            println!("[{id}] WARN: app execution failed, dropping.");
                             // Clean up reader
                             let _ = reader.join();
                             return;
@@ -147,7 +172,7 @@ fn run_app(id: u16, stream: &mut TcpStream, app: String, args: Vec<String>, apps
                             if reader.is_finished() {
                                 if let Ok(None) = child.try_wait() {
                                     // Reader failed but child still busy, stdout will never empty
-                                    println!("[{}] WARN: reading app output failed, dropping.", id);
+                                    println!("[{id}] WARN: reading app output failed, dropping.");
                                     // Kill child
                                     let _ = child.kill();
                                     let _ = child.wait();
@@ -159,7 +184,7 @@ fn run_app(id: u16, stream: &mut TcpStream, app: String, args: Vec<String>, apps
 
                     // Is connection closed?
                     if let Err(_) = stream.write(&[b'\0']) {
-                        println!("[{}] WARN: client dropped connection, dropping.", id);
+                        println!("[{id}] WARN: client dropped connection, dropping.");
                         // Kill child
                         let _ = child.kill();
                         let _ = child.wait();
@@ -172,29 +197,26 @@ fn run_app(id: u16, stream: &mut TcpStream, app: String, args: Vec<String>, apps
                     thread::sleep(Duration::from_millis(100));
                 }
             } else {
-                println!(
-                    "[{}] WARN: failed to connect to app's stdout, dropping.",
-                    id
-                );
+                println!("[{id}] WARN: failed to connect to app's stdout, dropping.");
                 // Kill child
                 let _ = child.kill();
                 let _ = child.wait();
             }
         } else {
-            println!("[{}] WARN: app failed to start, dropping.", id);
+            println!("[{id}] WARN: app failed to start, dropping.");
         }
     } else {
         // App is not allowed
-        println!("[{}] WARN: '{}' not in 'apps.txt', dropping.", id, app);
+        println!("[{id}] WARN: '{app}' not in 'apps.txt', dropping.");
     }
 }
 
 fn info(id: u16, stream: &mut TcpStream) {
     if let Ok(n) = thread::available_parallelism() {
-        _ = write!(stream, "N{}\0", n);
-        println!("[{}] INFO: sent info.", id);
+        _ = write!(stream, "N{n}\0");
+        println!("[{id}] INFO: sent info.");
     } else {
         _ = write!(stream, "N1\0");
-        println!("[{}] WARN: could not read number of threads, assuming one.", id);
+        println!("[{id}] WARN: could not read number of threads, assuming one.");
     }
 }
